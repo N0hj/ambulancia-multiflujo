@@ -40,7 +40,9 @@ costos = {
 # =========================
 @st.cache_data
 def cargar_mapa():
-    G = ox.graph_from_place("San Joaquín, Medellín, Colombia", network_type='drive')
+    # Descargar red vial centrada en San Joaquín, Medellín (zona segura)
+    lat, lon = 6.2433, -75.5881
+    G = ox.graph_from_point((lat, lon), dist=800, network_type='drive')
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
     return G
