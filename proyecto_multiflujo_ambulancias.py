@@ -3,18 +3,19 @@ import networkx as nx
 import osmnx as ox
 import random
 import folium
-from pulp import LpProblem, LpVariable, lpSum, LpMinimize, LpStatus, value
+from pulp import LpProblem, LpVariable, lpSum, LpMinimize, LpStatus
 from streamlit_folium import st_folium
 
-# Configuración de la página
+# ==============================
+# CONFIGURACIÓN DE LA APP
+# ==============================
 st.set_page_config(page_title="Optimización de Ambulancias", layout="wide")
 
 # ==============================
-# FUNCIÓN PARA CARGAR Y CONFIGURAR EL GRAFO
+# FUNCIÓN PARA CARGAR GRAFO
 # ==============================
 @st.cache_data(show_spinner=False)
 def cargar_grafo():
-    # Cargar área de San Joaquín, Medellín (1 km² aprox)
     G = ox.graph_from_point((6.2406, -75.5896), dist=560, network_type='drive')
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
@@ -23,7 +24,7 @@ def cargar_grafo():
 G = cargar_grafo()
 
 # ==============================
-# FUNCIÓN PARA GENERAR BASE Y EMERGENCIAS
+# FUNCIONES AUXILIARES
 # ==============================
 def generar_puntos(G, n_emergencias=5):
     nodos = list(G.nodes)
@@ -31,14 +32,13 @@ def generar_puntos(G, n_emergencias=5):
     emergencias = random.sample(nodos, n_emergencias)
     return base, emergencias
 
-# Configuración inicial
 if "base" not in st.session_state:
     st.session_state.base, st.session_state.emergencias = generar_puntos(G)
 if "estado_modelo" not in st.session_state:
-    st.session_state.estado_modelo = "No resuelto aún"
+    st.session_state.estado_modelo = "No resuelto"
 
 # ==============================
-# SIDEBAR DE PARÁMETROS
+# SIDEBAR
 # ==============================
 with st.sidebar:
     st.markdown("### ⚙️ Configuración de parámetros")
@@ -67,10 +67,20 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 📊 Estado del modelo:")
-    st.markdown(f"**{st.session_state.estado_modelo}**")
+
+    # Bloque persistente para estado
+    estado_placeholder = st.empty()
+    estado = st.session_state.estado_modelo
+    if "óptimo" in estado.lower():
+        color = "green"
+    elif "inf" in estado.lower():
+        color = "red"
+    else:
+        color = "orange"
+    estado_placeholder.markdown(f"<span style='color:{color}; font-size:18px; font-weight:bold;'>{estado}</span>", unsafe_allow_html=True)
 
 # ==============================
-# FUNCIÓN DE OPTIMIZACIÓN (PuLP)
+# OPTIMIZACIÓN CON PULP
 # ==============================
 def optimizar_rutas(G, base, emergencias, costo_leve, costo_media, costo_critica):
     model = LpProblem("Rutas_Ambulancias", LpMinimize)
@@ -81,42 +91,40 @@ def optimizar_rutas(G, base, emergencias, costo_leve, costo_media, costo_critica
 
     x = LpVariable.dicts("x", (tipos, arcos), lowBound=0, cat="Continuous")
 
-    # Función objetivo: minimizar costo total
     model += lpSum(G[u][v][0]['length'] * costos[t] * x[t][(u, v)] for t in tipos for (u, v) in arcos)
 
-    # Restricciones simples de flujo: cada emergencia debe ser alcanzada
+    # Cada emergencia debe ser atendida
     for e in emergencias:
         model += lpSum(x[t][(u, v)] for t in tipos for (u, v) in arcos if v == e) >= 1, f"Atencion_{e}"
 
-    # Capacidad de vía
+    # Restricciones de capacidad
     for (u, v) in arcos:
         capacidad = random.uniform(cap_min, cap_max)
         model += lpSum(x[t][(u, v)] for t in tipos) <= capacidad, f"Cap_{u}_{v}"
 
     model.solve()
-
     return model, LpStatus[model.status]
 
 # ==============================
-# EJECUTAR OPTIMIZACIÓN
+# EJECUCIÓN DEL MODELO
 # ==============================
 if calcular:
     model, estado = optimizar_rutas(G, st.session_state.base, st.session_state.emergencias, costo_leve, costo_media, costo_critica)
     st.session_state.estado_modelo = estado
 
 # ==============================
-# MAPA FOLIUM
+# MAPA
 # ==============================
 m = folium.Map(location=[6.2406, -75.5896], zoom_start=16)
 
-# Marcador base
+# Base
 folium.Marker(
     location=(G.nodes[st.session_state.base]['y'], G.nodes[st.session_state.base]['x']),
     popup="🚑 Base de ambulancias",
     icon=folium.Icon(color="blue", icon="home"),
 ).add_to(m)
 
-# Marcadores de emergencias
+# Emergencias
 for i, e in enumerate(st.session_state.emergencias):
     folium.Marker(
         location=(G.nodes[e]['y'], G.nodes[e]['x']),
@@ -125,4 +133,4 @@ for i, e in enumerate(st.session_state.emergencias):
     ).add_to(m)
 
 # Mostrar mapa
-st_data = st_folium(m, width=900, height=600)
+st_folium(m, width=900, height=600)
