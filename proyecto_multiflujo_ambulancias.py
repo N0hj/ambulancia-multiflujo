@@ -89,7 +89,7 @@ if "emergencias" not in st.session_state:
 def optimizar_con_pulp(G, base, emergencias, costos):
     prob = pulp.LpProblem("Ruteo_de_Ambulancias", pulp.LpMinimize)
 
-    # Variables binarias x[u,v,k,e]
+    # Variables binarias
     x = pulp.LpVariable.dicts("x", ((u, v, k, e) for u, v, k in G.edges(keys=True) for e in emergencias), cat="Binary")
 
     # Función objetivo
@@ -101,17 +101,15 @@ def optimizar_con_pulp(G, base, emergencias, costos):
 
     # Restricciones de capacidad
     for u, v, k, data in G.edges(keys=True, data=True):
-        prob += pulp.lpSum(x[(u, v, k, e)] for e in emergencias) <= 1, f"capacidad_{u}_{v}_{k}"
+        prob += pulp.lpSum(x[(u, v, k, e)] for e in emergencias) <= 1
 
     # Restricciones de conservación de flujo
     for e, info in emergencias.items():
         origen = base
         destino = info["nodo"]
-
         for n in G.nodes():
             in_edges = [(u, v, k) for u, v, k in G.in_edges(n, keys=True)]
             out_edges = [(u, v, k) for u, v, k in G.out_edges(n, keys=True)]
-
             if n == origen:
                 prob += pulp.lpSum(x[(u, v, k, e)] for u, v, k in out_edges) - pulp.lpSum(
                     x[(u, v, k, e)] for u, v, k in in_edges
@@ -125,7 +123,7 @@ def optimizar_con_pulp(G, base, emergencias, costos):
                     x[(u, v, k, e)] for u, v, k in in_edges
                 ) == 0
 
-    # Resolver modelo
+    # Resolver
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     estado = pulp.LpStatus[prob.status]
 
@@ -171,29 +169,31 @@ if recalcular_ubi:
 st.session_state.emergencias = generar_velocidades_requeridas(st.session_state.emergencias, Rmin, Rmax)
 
 # ============================================================
-# ESTADO DINÁMICO EN TIEMPO REAL (SEMÁFORO)
+# INDICADOR DE ESTADO PERSISTENTE EN LA BARRA LATERAL
 # ============================================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado del modelo")
 
-status_placeholder = st.sidebar.empty()
+if "estado" not in st.session_state:
+    st.session_state.estado = "En espera"
 
 if calcular:
-    with status_placeholder.container():
-        st.info("🟡 Ejecutando optimización...")
-        time.sleep(0.5)
-    rutas, estado = optimizar_con_pulp(st.session_state.G, st.session_state.base, st.session_state.emergencias, costos)
-    st.session_state.rutas = rutas
-    st.session_state.estado = estado
+    st.session_state.estado = "Ejecutando..."
+    with st.spinner("Ejecutando optimización con PuLP..."):
+        rutas, estado = optimizar_con_pulp(st.session_state.G, st.session_state.base, st.session_state.emergencias, costos)
+        st.session_state.rutas = rutas
+        st.session_state.estado = estado
 
-# Mostrar estado
-if "estado" in st.session_state:
-    if st.session_state.estado in ["Optimal", "Feasible"]:
-        status_placeholder.success(f"🟢 Modelo {st.session_state.estado}")
-    else:
-        status_placeholder.error(f"🔴 Modelo {st.session_state.estado}")
+# Mostrar estado persistente con color
+estado = st.session_state.estado
+if estado in ["Optimal", "Feasible"]:
+    st.sidebar.success("🟢 Modelo factible / óptimo")
+elif estado == "Ejecutando...":
+    st.sidebar.info("🟡 Ejecutando optimización...")
+elif estado == "Infeasible":
+    st.sidebar.error("🔴 Modelo infeasible")
 else:
-    status_placeholder.info("⚪ En espera de ejecución...")
+    st.sidebar.warning("⚪ En espera de ejecución")
 
 # ============================================================
 # MAPA INTERACTIVO
