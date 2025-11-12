@@ -1,114 +1,167 @@
 import streamlit as st
 import osmnx as ox
 import networkx as nx
-import random
 import folium
+from streamlit_folium import st_folium
+import random
+import pulp
 
-# --------------------------------------------------
-# Configuración general
-# --------------------------------------------------
-st.set_page_config(page_title="Modelo Multiflujo de Ambulancias", layout="wide")
-st.title("🚑 Modelo de Enrutamiento Multiflujo de Ambulancias")
+# =========================
+# CONFIGURACIÓN DE PÁGINA
+# =========================
+st.set_page_config(
+    page_title="Optimización de rutas de ambulancias",
+    layout="wide",
+)
+
+st.title("🚑 Optimización de rutas de ambulancias - Modelo multiflujo")
 
 st.sidebar.header("⚙️ Configuración de parámetros")
 
-# Parámetros configurables
-Rmin = st.sidebar.slider("Velocidad mínima requerida (km/h)", 10, 60, 20)
-Rmax = st.sidebar.slider("Velocidad máxima requerida (km/h)", 30, 120, 80)
-Cmin = st.sidebar.slider("Capacidad mínima de vía (km/h)", 10, 50, 20)
-Cmax = st.sidebar.slider("Capacidad máxima de vía (km/h)", 50, 120, 80)
+# =========================
+# PARÁMETROS CONFIGURABLES
+# =========================
+Rmin = st.sidebar.slider("Velocidad mínima requerida (km/h)", 10, 100, 30)
+Rmax = st.sidebar.slider("Velocidad máxima requerida (km/h)", 20, 120, 60)
+Cmin = st.sidebar.slider("Capacidad mínima de vía (km/h)", 10, 100, 20)
+Cmax = st.sidebar.slider("Capacidad máxima de vía (km/h)", 20, 120, 80)
 
-# --------------------------------------------------
-# Cargar red vial
-# --------------------------------------------------
-center_point = (6.2442, -75.5812)
-st.subheader("📍 Red vial de Medellín (zona 1 km²)")
+st.sidebar.markdown("---")
+st.sidebar.subheader("💰 Costos operativos de ambulancias")
 
-with st.spinner("Cargando red de OpenStreetMap..."):
-    G = ox.graph_from_point(center_point, dist=500, network_type="drive")
-    G = G.to_undirected()
+costos = {
+    "leve": st.sidebar.number_input("Transporte simple (Leve)", min_value=50, max_value=500, value=100),
+    "media": st.sidebar.number_input("Cuidados intermedios (Media)", min_value=100, max_value=600, value=200),
+    "critica": st.sidebar.number_input("Cuidados críticos (Crítica)", min_value=150, max_value=800, value=300),
+}
 
-# --------------------------------------------------
-# Función: asignar capacidades
-# --------------------------------------------------
-def asignar_capacidades(G, Cmin, Cmax, Rmin, Rmax):
-    for u, v, data in G.edges(data=True):
-        data["capacity"] = random.uniform(Cmin, Cmax)
-        data["speed"] = random.uniform(Rmin, Rmax)
-        # Peso inverso a la velocidad: rutas más rápidas = menor costo
-        data["weight"] = 1 / data["speed"]
+# =========================
+# DESCARGA Y PROCESO DE MAPA
+# =========================
+@st.cache_data
+def cargar_mapa():
+    G = ox.graph_from_place("San Joaquín, Medellín, Colombia", network_type='drive')
+    G = ox.add_edge_speeds(G)
+    G = ox.add_edge_travel_times(G)
     return G
 
-# Botón para recalcular capacidades
-if st.button("🔁 Recalcular capacidades de las vías"):
-    G = asignar_capacidades(G, Cmin, Cmax, Rmin, Rmax)
-    st.success("Capacidades y velocidades recalculadas.")
+G = cargar_mapa()
 
-# Si no se ha presionado el botón antes
-if "capacidades_asignadas" not in st.session_state:
-    G = asignar_capacidades(G, Cmin, Cmax, Rmin, Rmax)
-    st.session_state.capacidades_asignadas = True
+# =========================
+# GENERACIÓN DE DATOS ALEATORIOS
+# =========================
+def asignar_capacidades(G, cmin, cmax):
+    for u, v, k, data in G.edges(keys=True, data=True):
+        data["capacidad"] = random.uniform(cmin, cmax)
+    return G
 
-# --------------------------------------------------
-# Nodos base y emergencias
-# --------------------------------------------------
-st.subheader("🚨 Emergencias simuladas")
-base_node = list(G.nodes())[0]
-dest_nodes = random.sample(list(G.nodes()), 3)
-tipos = ["crítica", "media", "leve"]
-requerimientos = {"crítica": Rmax * 0.9, "media": Rmax * 0.7, "leve": Rmax * 0.5}
-incidentes = {dest_nodes[i]: tipos[i] for i in range(3)}
-st.json(incidentes)
+def generar_requerimientos(num):
+    return [random.uniform(Rmin, Rmax) for _ in range(num)]
 
-# --------------------------------------------------
-# Cálculo de rutas (botón)
-# --------------------------------------------------
-st.subheader("🧮 Cálculo de rutas óptimas")
+# =========================
+# PUNTOS DE EMERGENCIA Y BASES
+# =========================
+bases = {
+    "Base 1": list(G.nodes())[100],
+    "Base 2": list(G.nodes())[400],
+    "Base 3": list(G.nodes())[700]
+}
 
-edges_selected = []
-rutas = {}
+emergencias = {
+    "E1": {"nodo": list(G.nodes())[200], "tipo": "leve"},
+    "E2": {"nodo": list(G.nodes())[500], "tipo": "media"},
+    "E3": {"nodo": list(G.nodes())[800], "tipo": "critica"}
+}
 
-if st.button("🚦 Recalcular flujos"):
-    st.info("Ejecutando modelo de rutas...")
+# =========================
+# ASIGNAR AMBULANCIAS Y RUTAS
+# =========================
+def optimizar_asignacion(G, bases, emergencias, costos):
+    rutas = []
+    for e, info in emergencias.items():
+        tipo = info["tipo"]
+        costo = costos[tipo]
+        nodo_emergencia = info["nodo"]
 
-    for destino, tipo in incidentes.items():
-        try:
-            ruta = nx.shortest_path(G, source=base_node, target=destino, weight="weight")
-            rutas[tipo] = ruta
-            # Guardar aristas para el mapa
-            for i in range(len(ruta) - 1):
-                edges_selected.append((ruta[i], ruta[i + 1]))
-        except Exception as e:
-            st.error(f"No se pudo calcular ruta para {tipo}: {e}")
+        # Buscar base más cercana
+        dist_min = float("inf")
+        base_asignada = None
+        for b, nodo_base in bases.items():
+            try:
+                dist = nx.shortest_path_length(G, nodo_base, nodo_emergencia, weight='length')
+                if dist < dist_min:
+                    dist_min = dist
+                    base_asignada = b
+            except:
+                continue
 
-    st.success("✅ Rutas recalculadas correctamente.")
+        # Ruta más corta
+        path = nx.shortest_path(G, bases[base_asignada], nodo_emergencia, weight='length')
+        rutas.append({
+            "emergencia": e,
+            "tipo": tipo,
+            "ambulancia": base_asignada,
+            "ruta": path,
+            "distancia": dist_min,
+            "costo": costo
+        })
+    return rutas
 
-# --------------------------------------------------
-# Mapa
-# --------------------------------------------------
-st.subheader("🗺️ Visualización de rutas")
+# =========================
+# BOTONES DE INTERACCIÓN
+# =========================
+col1, col2 = st.sidebar.columns(2)
+recalcular_cap = col1.button("🔄 Recalcular capacidades")
+recalcular_flujos = col2.button("🚨 Recalcular flujos")
 
-m = ox.plot_graph_folium(G, color="gray", weight=1)
+if "G" not in st.session_state or recalcular_cap:
+    st.session_state.G = asignar_capacidades(G.copy(), Cmin, Cmax)
 
-# Base
-folium.Marker(
-    location=(G.nodes[base_node]["y"], G.nodes[base_node]["x"]),
-    popup="Base de ambulancias 🏥",
-    icon=folium.Icon(color="blue"),
-).add_to(m)
+if recalcular_flujos or "rutas" not in st.session_state:
+    st.session_state.rutas = optimizar_asignacion(st.session_state.G, bases, emergencias, costos)
 
-# Destinos
-for node, tipo in incidentes.items():
+# =========================
+# MAPA INTERACTIVO
+# =========================
+m = folium.Map(location=[6.243, -75.584], zoom_start=15, tiles="cartodbpositron")
+
+# Marcar bases
+for b, nodo in bases.items():
+    lat, lon = G.nodes[nodo]['y'], G.nodes[nodo]['x']
     folium.Marker(
-        location=(G.nodes[node]["y"], G.nodes[node]["x"]),
-        popup=f"Emergencia {tipo}",
-        icon=folium.Icon(color="red" if tipo == "crítica" else "orange" if tipo == "media" else "green"),
+        [lat, lon], popup=f"{b}", tooltip=b,
+        icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-# Dibujar rutas si existen
-colores = {"crítica": "red", "media": "orange", "leve": "green"}
-for tipo, ruta in rutas.items():
-    puntos = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in ruta]
-    folium.PolyLine(puntos, color=colores[tipo], weight=5, tooltip=f"Ruta {tipo}").add_to(m)
+# Marcar emergencias
+colores = {"leve": "green", "media": "orange", "critica": "red"}
 
-st.components.v1.html(m._repr_html_(), height=600)
+for e in st.session_state.rutas:
+    tipo = e["tipo"]
+    path = e["ruta"]
+    coords = [(G.nodes[n]['y'], G.nodes[n]['x']) for n in path]
+    folium.PolyLine(coords, color=colores[tipo], weight=6, opacity=0.8,
+                    tooltip=f"{e['emergencia']} ({tipo}) - {e['ambulancia']}").add_to(m)
+    lat_e, lon_e = G.nodes[path[-1]]['y'], G.nodes[path[-1]]['x']
+    folium.Marker([lat_e, lon_e],
+                  icon=folium.Icon(color=colores[tipo], icon="info-sign"),
+                  popup=f"{e['emergencia']} - Urgencia: {tipo}\nCosto: {e['costo']}").add_to(m)
+
+st_folium(m, width=1300, height=600)
+
+# =========================
+# TABLA DE RESULTADOS
+# =========================
+st.subheader("📊 Resultados de asignación")
+st.write("Cada flujo corresponde a una emergencia atendida por una ambulancia asignada.")
+
+st.table([
+    {
+        "Emergencia": e["emergencia"],
+        "Tipo": e["tipo"],
+        "Ambulancia asignada": e["ambulancia"],
+        "Distancia (m)": round(e["distancia"], 2),
+        "Costo operativo": e["costo"]
+    }
+    for e in st.session_state.rutas
+])
