@@ -121,4 +121,13 @@ for destino, tipo in urgencias.items():
 
 m
 
-!jupyter nbconvert --to script Proyecto_Multiflujo_Ambulancias.ipynb
+with open("requirements.txt", "w") as f:
+    f.write(
+        "osmnx==1.9.2\n"
+        "networkx\n"
+        "pulp\n"
+        "streamlit\n"
+        "folium\n"
+        "pandas\n"
+        "pyngrok\n"
+    )
