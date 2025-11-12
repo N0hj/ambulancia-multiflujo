@@ -41,7 +41,8 @@ costos = {
 @st.cache_data
 def cargar_mapa():
     lat, lon = 6.2433, -75.5881  # San Joaquín, Medellín
-    G = ox.graph_from_point((lat, lon), dist=800, network_type='drive')
+    # 1 km² -> radio ≈ 560 metros
+    G = ox.graph_from_point((lat, lon), dist=560, network_type='drive')
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
     return G
@@ -56,23 +57,24 @@ def asignar_capacidades(G, cmin, cmax):
         data["capacidad"] = random.uniform(cmin, cmax)
     return G
 
-# =========================
-# GENERACIÓN DE BASE Y EMERGENCIAS
-# =========================
-nodos = list(G.nodes())
-
-if "base" not in st.session_state:
-    st.session_state.base = random.choice(nodos)
-
-if "emergencias" not in st.session_state:
-    st.session_state.emergencias = {
+def generar_base_y_emergencias(G):
+    """Genera una nueva base y tres emergencias aleatorias."""
+    nodos = list(G.nodes())
+    base = random.choice(nodos)
+    emergencias = {
         "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
         "E2": {"nodo": random.choice(nodos), "tipo": "media"},
         "E3": {"nodo": random.choice(nodos), "tipo": "critica"},
     }
+    return base, emergencias
 
-base = st.session_state.base
-emergencias = st.session_state.emergencias
+# =========================
+# SESIÓN INICIAL
+# =========================
+if "base" not in st.session_state or "emergencias" not in st.session_state:
+    base, emergencias = generar_base_y_emergencias(G)
+    st.session_state.base = base
+    st.session_state.emergencias = emergencias
 
 # =========================
 # FUNCIÓN DE OPTIMIZACIÓN
@@ -102,24 +104,32 @@ def optimizar_asignacion(G, base, emergencias, costos):
 # =========================
 # BOTONES DE INTERACCIÓN
 # =========================
-col1, col2 = st.sidebar.columns(2)
-recalcular_cap = col1.button("🔄 Recalcular capacidades")
-recalcular_flujos = col2.button("🚨 Recalcular flujos")
+st.sidebar.markdown("---")
+col1, col2, col3 = st.sidebar.columns(3)
+recalcular_cap = col1.button("🔄 Capacidades")
+recalcular_flujos = col2.button("🚨 Flujos")
+nueva_base = col3.button("🎲 Nueva ubicación")
 
 if "G" not in st.session_state or recalcular_cap:
     st.session_state.G = asignar_capacidades(G.copy(), Cmin, Cmax)
 
-if recalcular_flujos or "rutas" not in st.session_state:
+# Generar nueva base y emergencias
+if nueva_base:
+    base, emergencias = generar_base_y_emergencias(G)
+    st.session_state.base = base
+    st.session_state.emergencias = emergencias
     st.session_state.rutas = optimizar_asignacion(st.session_state.G, base, emergencias, costos)
+elif recalcular_flujos or "rutas" not in st.session_state:
+    st.session_state.rutas = optimizar_asignacion(st.session_state.G, st.session_state.base, st.session_state.emergencias, costos)
 
 # =========================
 # MAPA INTERACTIVO
 # =========================
-m = folium.Map(location=[6.243, -75.584], zoom_start=15, tiles="cartodbpositron")
+m = folium.Map(location=[6.2433, -75.5881], zoom_start=15, tiles="cartodbpositron")
 colores = {"leve": "green", "media": "orange", "critica": "red"}
 
 # Marcar base
-lat_b, lon_b = G.nodes[base]['y'], G.nodes[base]['x']
+lat_b, lon_b = G.nodes[st.session_state.base]['y'], G.nodes[st.session_state.base]['x']
 folium.Marker(
     [lat_b, lon_b],
     popup="🚑 Base de ambulancias",
