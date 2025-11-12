@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🚑 Optimización de rutas de ambulancias - Modelo multiflujo")
+st.title("🚑 Optimización de rutas de ambulancias - Modelo multiflujo (1 base, múltiples emergencias)")
 
 st.sidebar.header("⚙️ Configuración de parámetros")
 
@@ -40,8 +40,7 @@ costos = {
 # =========================
 @st.cache_data
 def cargar_mapa():
-    # Descargar red vial centrada en San Joaquín, Medellín (zona segura)
-    lat, lon = 6.2433, -75.5881
+    lat, lon = 6.2433, -75.5881  # San Joaquín, Medellín
     G = ox.graph_from_point((lat, lon), dist=800, network_type='drive')
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
@@ -50,76 +49,54 @@ def cargar_mapa():
 G = cargar_mapa()
 
 # =========================
-# GENERACIÓN DE DATOS ALEATORIOS
+# FUNCIONES AUXILIARES
 # =========================
 def asignar_capacidades(G, cmin, cmax):
     for u, v, k, data in G.edges(keys=True, data=True):
         data["capacidad"] = random.uniform(cmin, cmax)
     return G
 
-def generar_requerimientos(num):
-    return [random.uniform(Rmin, Rmax) for _ in range(num)]
-
 # =========================
-# PUNTOS DE EMERGENCIA Y BASES
+# GENERACIÓN DE BASE Y EMERGENCIAS
 # =========================
-import random
-
-# Obtener todos los nodos del grafo
 nodos = list(G.nodes())
 
-# Crear las bases y emergencias solo la primera vez
-if "bases" not in st.session_state:
-    st.session_state.bases = {
-        "Base 1": random.choice(nodos),
-        "Base 2": random.choice(nodos),
-        "Base 3": random.choice(nodos)
-    }
+if "base" not in st.session_state:
+    st.session_state.base = random.choice(nodos)
 
 if "emergencias" not in st.session_state:
     st.session_state.emergencias = {
         "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
         "E2": {"nodo": random.choice(nodos), "tipo": "media"},
-        "E3": {"nodo": random.choice(nodos), "tipo": "critica"}
+        "E3": {"nodo": random.choice(nodos), "tipo": "critica"},
     }
 
-# Usar las variables almacenadas
-bases = st.session_state.bases
+base = st.session_state.base
 emergencias = st.session_state.emergencias
 
-
 # =========================
-# ASIGNAR AMBULANCIAS Y RUTAS
+# FUNCIÓN DE OPTIMIZACIÓN
 # =========================
-def optimizar_asignacion(G, bases, emergencias, costos):
+def optimizar_asignacion(G, base, emergencias, costos):
     rutas = []
     for e, info in emergencias.items():
         tipo = info["tipo"]
         costo = costos[tipo]
         nodo_emergencia = info["nodo"]
 
-        # Buscar base más cercana
-        dist_min = float("inf")
-        base_asignada = None
-        for b, nodo_base in bases.items():
-            try:
-                dist = nx.shortest_path_length(G, nodo_base, nodo_emergencia, weight='length')
-                if dist < dist_min:
-                    dist_min = dist
-                    base_asignada = b
-            except:
-                continue
+        try:
+            dist = nx.shortest_path_length(G, base, nodo_emergencia, weight='length')
+            path = nx.shortest_path(G, base, nodo_emergencia, weight='length')
 
-        # Ruta más corta
-        path = nx.shortest_path(G, bases[base_asignada], nodo_emergencia, weight='length')
-        rutas.append({
-            "emergencia": e,
-            "tipo": tipo,
-            "ambulancia": base_asignada,
-            "ruta": path,
-            "distancia": dist_min,
-            "costo": costo
-        })
+            rutas.append({
+                "emergencia": e,
+                "tipo": tipo,
+                "ruta": path,
+                "distancia": dist,
+                "costo": costo
+            })
+        except nx.NetworkXNoPath:
+            st.warning(f"No hay ruta disponible entre la base y {e}.")
     return rutas
 
 # =========================
@@ -133,34 +110,39 @@ if "G" not in st.session_state or recalcular_cap:
     st.session_state.G = asignar_capacidades(G.copy(), Cmin, Cmax)
 
 if recalcular_flujos or "rutas" not in st.session_state:
-    st.session_state.rutas = optimizar_asignacion(st.session_state.G, bases, emergencias, costos)
+    st.session_state.rutas = optimizar_asignacion(st.session_state.G, base, emergencias, costos)
 
 # =========================
 # MAPA INTERACTIVO
 # =========================
 m = folium.Map(location=[6.243, -75.584], zoom_start=15, tiles="cartodbpositron")
-
-# Marcar bases
-for b, nodo in bases.items():
-    lat, lon = G.nodes[nodo]['y'], G.nodes[nodo]['x']
-    folium.Marker(
-        [lat, lon], popup=f"{b}", tooltip=b,
-        icon=folium.Icon(color="blue", icon="info-sign")
-    ).add_to(m)
-
-# Marcar emergencias
 colores = {"leve": "green", "media": "orange", "critica": "red"}
 
+# Marcar base
+lat_b, lon_b = G.nodes[base]['y'], G.nodes[base]['x']
+folium.Marker(
+    [lat_b, lon_b],
+    popup="🚑 Base de ambulancias",
+    tooltip="Base principal",
+    icon=folium.Icon(color="blue", icon="hospital", prefix="fa")
+).add_to(m)
+
+# Dibujar rutas y emergencias
 for e in st.session_state.rutas:
     tipo = e["tipo"]
     path = e["ruta"]
     coords = [(G.nodes[n]['y'], G.nodes[n]['x']) for n in path]
-    folium.PolyLine(coords, color=colores[tipo], weight=6, opacity=0.8,
-                    tooltip=f"{e['emergencia']} ({tipo}) - {e['ambulancia']}").add_to(m)
+    color = colores[tipo]
+
+    folium.PolyLine(coords, color=color, weight=6, opacity=0.8,
+                    tooltip=f"{e['emergencia']} ({tipo})").add_to(m)
+
     lat_e, lon_e = G.nodes[path[-1]]['y'], G.nodes[path[-1]]['x']
-    folium.Marker([lat_e, lon_e],
-                  icon=folium.Icon(color=colores[tipo], icon="info-sign"),
-                  popup=f"{e['emergencia']} - Urgencia: {tipo}\nCosto: {e['costo']}").add_to(m)
+    folium.Marker(
+        [lat_e, lon_e],
+        icon=folium.Icon(color=color, icon="exclamation-triangle", prefix="fa"),
+        popup=f"{e['emergencia']} - Urgencia: {tipo}\nCosto: {e['costo']}"
+    ).add_to(m)
 
 st_folium(m, width=1300, height=600)
 
@@ -168,13 +150,12 @@ st_folium(m, width=1300, height=600)
 # TABLA DE RESULTADOS
 # =========================
 st.subheader("📊 Resultados de asignación")
-st.write("Cada flujo corresponde a una emergencia atendida por una ambulancia asignada.")
+st.write("Cada flujo corresponde a una emergencia atendida desde la única base de ambulancias.")
 
 st.table([
     {
         "Emergencia": e["emergencia"],
         "Tipo": e["tipo"],
-        "Ambulancia asignada": e["ambulancia"],
         "Distancia (m)": round(e["distancia"], 2),
         "Costo operativo": e["costo"]
     }
