@@ -7,7 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/19Wo5jGB9j8t_KG2424KGWBF_iP-GnfRu
 """
 
-!pip install osmnx pulp streamlit pyngrok folium networkx
+
 
 import osmnx as ox
 import networkx as nx
