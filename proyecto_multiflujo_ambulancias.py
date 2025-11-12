@@ -1,5 +1,5 @@
 # ============================================================
-# 🚑 PROYECTO: Optimización de rutas de ambulancias (Multiflujo)
+# 🚑 PROYECTO: Optimización de rutas de ambulancias (Multiflujo con PuLP)
 # Autor: [Tu Nombre]
 # Universidad: [UPB]
 # ============================================================
@@ -11,6 +11,7 @@ import folium
 from streamlit_folium import st_folium
 import random
 import pulp
+import time
 
 # ============================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -27,7 +28,6 @@ st.sidebar.header("⚙️ Configuración de parámetros")
 # ============================================================
 # PARÁMETROS CONFIGURABLES
 # ============================================================
-# Configuración predeterminada estable (más factible)
 Rmin = st.sidebar.slider("Velocidad mínima requerida (km/h)", 10, 80, 20)
 Rmax = st.sidebar.slider("Velocidad máxima requerida (km/h)", 40, 120, 60)
 Cmin = st.sidebar.slider("Capacidad mínima de vía (km/h)", 10, 80, 30)
@@ -47,8 +47,7 @@ costos = {
 # ============================================================
 @st.cache_data
 def cargar_mapa():
-    # Descargar red vial centrada en San Joaquín, Medellín (≈1 km²)
-    lat, lon = 6.2433, -75.5881
+    lat, lon = 6.2433, -75.5881  # Zona San Joaquín, Medellín
     G = ox.graph_from_point((lat, lon), dist=800, network_type="drive")
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
@@ -60,13 +59,11 @@ G = cargar_mapa()
 # FUNCIONES AUXILIARES
 # ============================================================
 def asignar_capacidades(G, cmin, cmax):
-    """Asigna una capacidad (velocidad máxima) aleatoria a cada vía."""
     for u, v, k, data in G.edges(keys=True, data=True):
         data["capacidad"] = random.uniform(cmin, cmax)
     return G
 
 def generar_velocidades_requeridas(emergencias, rmin, rmax):
-    """Genera velocidades requeridas (Ri) aleatorias para cada flujo."""
     for e in emergencias.values():
         e["vel_requerida"] = random.uniform(rmin, rmax)
     return emergencias
@@ -90,14 +87,9 @@ if "emergencias" not in st.session_state:
 # MODELO DE OPTIMIZACIÓN MULTIFLUJO CON PuLP
 # ============================================================
 def optimizar_con_pulp(G, base, emergencias, costos):
-    """
-    Modelo multiflujo (multi-commodity flow) que minimiza el costo total
-    de atención de emergencias considerando capacidad de vías y costos operativos.
-    """
-
     prob = pulp.LpProblem("Ruteo_de_Ambulancias", pulp.LpMinimize)
 
-    # Variables binarias para cada arco y emergencia
+    # Variables binarias x[u,v,k,e]
     x = pulp.LpVariable.dicts("x", ((u, v, k, e) for u, v, k in G.edges(keys=True) for e in emergencias), cat="Binary")
 
     # Función objetivo
@@ -137,7 +129,6 @@ def optimizar_con_pulp(G, base, emergencias, costos):
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     estado = pulp.LpStatus[prob.status]
 
-    # Si es factible, calcular rutas
     rutas = []
     if estado in ["Optimal", "Feasible"]:
         for e, info in emergencias.items():
@@ -162,9 +153,9 @@ def optimizar_con_pulp(G, base, emergencias, costos):
 # BOTONES DE INTERACCIÓN
 # ============================================================
 col1, col2, col3 = st.sidebar.columns(3)
-recalcular_cap = col1.button("🔄 Recalcular capacidades")
-recalcular_ubi = col2.button("🎲 Recalcular ubicaciones")
-calcular = col3.button("🚑 Calcular rutas óptimas")
+recalcular_cap = col1.button("🔄 Capacidad")
+recalcular_ubi = col2.button("🎲 Ubicaciones")
+calcular = col3.button("🚑 Optimizar")
 
 if recalcular_cap or "G" not in st.session_state:
     st.session_state.G = asignar_capacidades(G.copy(), Cmin, Cmax)
@@ -179,26 +170,37 @@ if recalcular_ubi:
 
 st.session_state.emergencias = generar_velocidades_requeridas(st.session_state.emergencias, Rmin, Rmax)
 
+# ============================================================
+# ESTADO DINÁMICO EN TIEMPO REAL (SEMÁFORO)
+# ============================================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Estado del modelo")
+
+status_placeholder = st.sidebar.empty()
+
 if calcular:
+    with status_placeholder.container():
+        st.info("🟡 Ejecutando optimización...")
+        time.sleep(0.5)
     rutas, estado = optimizar_con_pulp(st.session_state.G, st.session_state.base, st.session_state.emergencias, costos)
     st.session_state.rutas = rutas
     st.session_state.estado = estado
 
-# ============================================================
-# MOSTRAR ESTADO DEL MODELO (persistente)
-# ============================================================
+# Mostrar estado
 if "estado" in st.session_state:
     if st.session_state.estado in ["Optimal", "Feasible"]:
-        st.success(f"✅ Optimización completada: {st.session_state.estado}")
+        status_placeholder.success(f"🟢 Modelo {st.session_state.estado}")
     else:
-        st.error(f"⚠️ Optimización no factible: {st.session_state.estado}")
+        status_placeholder.error(f"🔴 Modelo {st.session_state.estado}")
+else:
+    status_placeholder.info("⚪ En espera de ejecución...")
 
 # ============================================================
 # MAPA INTERACTIVO
 # ============================================================
 m = folium.Map(location=[6.243, -75.588], zoom_start=15, tiles="cartodbpositron")
 
-# Marcar base
+# Base
 lat_b, lon_b = G.nodes[st.session_state.base]["y"], G.nodes[st.session_state.base]["x"]
 folium.Marker(
     [lat_b, lon_b],
@@ -207,10 +209,9 @@ folium.Marker(
     icon=folium.Icon(color="blue", icon="home"),
 ).add_to(m)
 
-# Colores por tipo
+# Colores
 colores = {"leve": "green", "media": "orange", "critica": "red"}
 
-# Dibujar rutas
 if "rutas" in st.session_state:
     for e in st.session_state.rutas:
         tipo = e["tipo"]
