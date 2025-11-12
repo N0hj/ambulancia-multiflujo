@@ -63,16 +63,22 @@ def generar_requerimientos(num):
 # =========================
 # PUNTOS DE EMERGENCIA Y BASES
 # =========================
+import random
+
+# Obtener todos los nodos del grafo
+nodos = list(G.nodes())
+
+# Seleccionar aleatoriamente tres bases y tres emergencias
 bases = {
-    "Base 1": list(G.nodes())[100],
-    "Base 2": list(G.nodes())[400],
-    "Base 3": list(G.nodes())[700]
+    "Base 1": random.choice(nodos),
+    "Base 2": random.choice(nodos),
+    "Base 3": random.choice(nodos)
 }
 
 emergencias = {
-    "E1": {"nodo": list(G.nodes())[200], "tipo": "leve"},
-    "E2": {"nodo": list(G.nodes())[500], "tipo": "media"},
-    "E3": {"nodo": list(G.nodes())[800], "tipo": "critica"}
+    "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
+    "E2": {"nodo": random.choice(nodos), "tipo": "media"},
+    "E3": {"nodo": random.choice(nodos), "tipo": "critica"}
 }
 
 # =========================
