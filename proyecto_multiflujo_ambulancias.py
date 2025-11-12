@@ -68,18 +68,25 @@ import random
 # Obtener todos los nodos del grafo
 nodos = list(G.nodes())
 
-# Seleccionar aleatoriamente tres bases y tres emergencias
-bases = {
-    "Base 1": random.choice(nodos),
-    "Base 2": random.choice(nodos),
-    "Base 3": random.choice(nodos)
-}
+# Crear las bases y emergencias solo la primera vez
+if "bases" not in st.session_state:
+    st.session_state.bases = {
+        "Base 1": random.choice(nodos),
+        "Base 2": random.choice(nodos),
+        "Base 3": random.choice(nodos)
+    }
 
-emergencias = {
-    "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
-    "E2": {"nodo": random.choice(nodos), "tipo": "media"},
-    "E3": {"nodo": random.choice(nodos), "tipo": "critica"}
-}
+if "emergencias" not in st.session_state:
+    st.session_state.emergencias = {
+        "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
+        "E2": {"nodo": random.choice(nodos), "tipo": "media"},
+        "E3": {"nodo": random.choice(nodos), "tipo": "critica"}
+    }
+
+# Usar las variables almacenadas
+bases = st.session_state.bases
+emergencias = st.session_state.emergencias
+
 
 # =========================
 # ASIGNAR AMBULANCIAS Y RUTAS
