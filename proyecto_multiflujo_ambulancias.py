@@ -1,256 +1,128 @@
-# ============================================================
-# 🚑 PROYECTO: Optimización de rutas de ambulancias (Multiflujo con PuLP)
-# Autor: [Tu Nombre]
-# Universidad: [UPB]
-# ============================================================
-
 import streamlit as st
-import osmnx as ox
 import networkx as nx
-import folium
-from streamlit_folium import st_folium
+import osmnx as ox
 import random
-import pulp
-import time
+import folium
+from pulp import LpProblem, LpVariable, lpSum, LpMinimize, LpStatus, value
+from streamlit_folium import st_folium
 
-# ============================================================
-# CONFIGURACIÓN DE PÁGINA
-# ============================================================
-st.set_page_config(
-    page_title="Optimización de rutas de ambulancias",
-    layout="wide",
-)
+# Configuración de la página
+st.set_page_config(page_title="Optimización de Ambulancias", layout="wide")
 
-st.title("🚑 Optimización de rutas de ambulancias - Modelo multiflujo con PuLP")
-
-st.sidebar.header("⚙️ Configuración de parámetros")
-
-# ============================================================
-# PARÁMETROS CONFIGURABLES
-# ============================================================
-Rmin = st.sidebar.slider("Velocidad mínima requerida (km/h)", 10, 80, 20)
-Rmax = st.sidebar.slider("Velocidad máxima requerida (km/h)", 40, 120, 60)
-Cmin = st.sidebar.slider("Capacidad mínima de vía (km/h)", 10, 80, 30)
-Cmax = st.sidebar.slider("Capacidad máxima de vía (km/h)", 60, 120, 100)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("💰 Costos operativos de ambulancias")
-
-costos = {
-    "leve": st.sidebar.number_input("Transporte simple (Leve)", min_value=50, max_value=500, value=100),
-    "media": st.sidebar.number_input("Cuidados intermedios (Media)", min_value=100, max_value=600, value=200),
-    "critica": st.sidebar.number_input("Cuidados críticos (Crítica)", min_value=150, max_value=800, value=300),
-}
-
-# ============================================================
-# DESCARGA Y PROCESO DE MAPA
-# ============================================================
-@st.cache_data
-def cargar_mapa():
-    lat, lon = 6.2433, -75.5881  # Zona San Joaquín, Medellín
-    G = ox.graph_from_point((lat, lon), dist=800, network_type="drive")
+# ==============================
+# FUNCIÓN PARA CARGAR Y CONFIGURAR EL GRAFO
+# ==============================
+@st.cache_data(show_spinner=False)
+def cargar_grafo():
+    # Cargar área de San Joaquín, Medellín (1 km² aprox)
+    G = ox.graph_from_point((6.2406, -75.5896), dist=560, network_type='drive')
     G = ox.add_edge_speeds(G)
     G = ox.add_edge_travel_times(G)
     return G
 
-G = cargar_mapa()
+G = cargar_grafo()
 
-# ============================================================
-# FUNCIONES AUXILIARES
-# ============================================================
-def asignar_capacidades(G, cmin, cmax):
-    for u, v, k, data in G.edges(keys=True, data=True):
-        data["capacidad"] = random.uniform(cmin, cmax)
-    return G
+# ==============================
+# FUNCIÓN PARA GENERAR BASE Y EMERGENCIAS
+# ==============================
+def generar_puntos(G, n_emergencias=5):
+    nodos = list(G.nodes)
+    base = random.choice(nodos)
+    emergencias = random.sample(nodos, n_emergencias)
+    return base, emergencias
 
-def generar_velocidades_requeridas(emergencias, rmin, rmax):
-    for e in emergencias.values():
-        e["vel_requerida"] = random.uniform(rmin, rmax)
-    return emergencias
-
-# ============================================================
-# CREACIÓN DE BASE Y EMERGENCIAS
-# ============================================================
-nodos = list(G.nodes())
-
+# Configuración inicial
 if "base" not in st.session_state:
-    st.session_state.base = random.choice(nodos)
+    st.session_state.base, st.session_state.emergencias = generar_puntos(G)
+if "estado_modelo" not in st.session_state:
+    st.session_state.estado_modelo = "No resuelto aún"
 
-if "emergencias" not in st.session_state:
-    st.session_state.emergencias = {
-        "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
-        "E2": {"nodo": random.choice(nodos), "tipo": "media"},
-        "E3": {"nodo": random.choice(nodos), "tipo": "critica"},
-    }
+# ==============================
+# SIDEBAR DE PARÁMETROS
+# ==============================
+with st.sidebar:
+    st.markdown("### ⚙️ Configuración de parámetros")
 
-# ============================================================
-# MODELO DE OPTIMIZACIÓN MULTIFLUJO CON PuLP
-# ============================================================
-def optimizar_con_pulp(G, base, emergencias, costos):
-    prob = pulp.LpProblem("Ruteo_de_Ambulancias", pulp.LpMinimize)
+    vel_min = st.slider("Velocidad mínima requerida (km/h)", 10, 50, 30)
+    vel_max = st.slider("Velocidad máxima requerida (km/h)", 40, 100, 60)
+    cap_min = st.slider("Capacidad mínima de vía (km/h)", 10, 50, 20)
+    cap_max = st.slider("Capacidad máxima de vía (km/h)", 60, 120, 80)
 
-    # Variables binarias
-    x = pulp.LpVariable.dicts("x", ((u, v, k, e) for u, v, k in G.edges(keys=True) for e in emergencias), cat="Binary")
+    st.markdown("### 💰 Costos operativos de ambulancias")
+    costo_leve = st.number_input("Transporte simple (Leve)", 50, 300, 100)
+    costo_media = st.number_input("Cuidados intermedios (Media)", 100, 400, 200)
+    costo_critica = st.number_input("Cuidados críticos (Crítica)", 200, 600, 300)
 
-    # Función objetivo
-    prob += pulp.lpSum(
-        G[u][v][k]["length"] * costos[emergencias[e]["tipo"]] * x[(u, v, k, e)]
-        for u, v, k in G.edges(keys=True)
-        for e in emergencias
-    )
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔄 Recalcular capacidades"):
+            G = cargar_grafo()
+    with col2:
+        if st.button("🎲 Recalcular ubicaciones"):
+            st.session_state.base, st.session_state.emergencias = generar_puntos(G)
+            st.session_state.estado_modelo = "Ubicaciones actualizadas"
+    with col3:
+        calcular = st.button("🚑 Calcular rutas óptimas")
 
-    # Restricciones de capacidad
-    for u, v, k, data in G.edges(keys=True, data=True):
-        prob += pulp.lpSum(x[(u, v, k, e)] for e in emergencias) <= 1
+    st.markdown("---")
+    st.markdown("### 📊 Estado del modelo:")
+    st.markdown(f"**{st.session_state.estado_modelo}**")
 
-    # Restricciones de conservación de flujo
-    for e, info in emergencias.items():
-        origen = base
-        destino = info["nodo"]
-        for n in G.nodes():
-            in_edges = [(u, v, k) for u, v, k in G.in_edges(n, keys=True)]
-            out_edges = [(u, v, k) for u, v, k in G.out_edges(n, keys=True)]
-            if n == origen:
-                prob += pulp.lpSum(x[(u, v, k, e)] for u, v, k in out_edges) - pulp.lpSum(
-                    x[(u, v, k, e)] for u, v, k in in_edges
-                ) == 1
-            elif n == destino:
-                prob += pulp.lpSum(x[(u, v, k, e)] for u, v, k in in_edges) - pulp.lpSum(
-                    x[(u, v, k, e)] for u, v, k in out_edges
-                ) == 1
-            else:
-                prob += pulp.lpSum(x[(u, v, k, e)] for u, v, k in out_edges) - pulp.lpSum(
-                    x[(u, v, k, e)] for u, v, k in in_edges
-                ) == 0
+# ==============================
+# FUNCIÓN DE OPTIMIZACIÓN (PuLP)
+# ==============================
+def optimizar_rutas(G, base, emergencias, costo_leve, costo_media, costo_critica):
+    model = LpProblem("Rutas_Ambulancias", LpMinimize)
 
-    # Resolver
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    estado = pulp.LpStatus[prob.status]
+    tipos = ["Leve", "Media", "Crítica"]
+    costos = {"Leve": costo_leve, "Media": costo_media, "Crítica": costo_critica}
+    arcos = list(G.edges)
 
-    rutas = []
-    if estado in ["Optimal", "Feasible"]:
-        for e, info in emergencias.items():
-            tipo = info["tipo"]
-            try:
-                path = nx.shortest_path(G, base, info["nodo"], weight="length")
-                distancia = nx.shortest_path_length(G, base, info["nodo"], weight="length")
-                rutas.append({
-                    "emergencia": e,
-                    "tipo": tipo,
-                    "vel_requerida": info["vel_requerida"],
-                    "ruta": path,
-                    "distancia": distancia,
-                    "costo": costos[tipo],
-                })
-            except nx.NetworkXNoPath:
-                continue
+    x = LpVariable.dicts("x", (tipos, arcos), lowBound=0, cat="Continuous")
 
-    return rutas, estado
+    # Función objetivo: minimizar costo total
+    model += lpSum(G[u][v][0]['length'] * costos[t] * x[t][(u, v)] for t in tipos for (u, v) in arcos)
 
-# ============================================================
-# BOTONES DE INTERACCIÓN
-# ============================================================
-col1, col2, col3 = st.sidebar.columns(3)
-recalcular_cap = col1.button("🔄 Capacidad")
-recalcular_ubi = col2.button("🎲 Ubicaciones")
-calcular = col3.button("🚑 Optimizar")
+    # Restricciones simples de flujo: cada emergencia debe ser alcanzada
+    for e in emergencias:
+        model += lpSum(x[t][(u, v)] for t in tipos for (u, v) in arcos if v == e) >= 1, f"Atencion_{e}"
 
-if recalcular_cap or "G" not in st.session_state:
-    st.session_state.G = asignar_capacidades(G.copy(), Cmin, Cmax)
+    # Capacidad de vía
+    for (u, v) in arcos:
+        capacidad = random.uniform(cap_min, cap_max)
+        model += lpSum(x[t][(u, v)] for t in tipos) <= capacidad, f"Cap_{u}_{v}"
 
-if recalcular_ubi:
-    st.session_state.base = random.choice(nodos)
-    st.session_state.emergencias = {
-        "E1": {"nodo": random.choice(nodos), "tipo": "leve"},
-        "E2": {"nodo": random.choice(nodos), "tipo": "media"},
-        "E3": {"nodo": random.choice(nodos), "tipo": "critica"},
-    }
+    model.solve()
 
-st.session_state.emergencias = generar_velocidades_requeridas(st.session_state.emergencias, Rmin, Rmax)
+    return model, LpStatus[model.status]
 
-# ============================================================
-# INDICADOR DE ESTADO PERSISTENTE EN LA BARRA LATERAL
-# ============================================================
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Estado del modelo")
-
-if "estado" not in st.session_state:
-    st.session_state.estado = "En espera"
-
+# ==============================
+# EJECUTAR OPTIMIZACIÓN
+# ==============================
 if calcular:
-    st.session_state.estado = "Ejecutando..."
-    with st.spinner("Ejecutando optimización con PuLP..."):
-        rutas, estado = optimizar_con_pulp(st.session_state.G, st.session_state.base, st.session_state.emergencias, costos)
-        st.session_state.rutas = rutas
-        st.session_state.estado = estado
+    model, estado = optimizar_rutas(G, st.session_state.base, st.session_state.emergencias, costo_leve, costo_media, costo_critica)
+    st.session_state.estado_modelo = estado
 
-# Mostrar estado persistente con color
-estado = st.session_state.estado
-if estado in ["Optimal", "Feasible"]:
-    st.sidebar.success("🟢 Modelo factible / óptimo")
-elif estado == "Ejecutando...":
-    st.sidebar.info("🟡 Ejecutando optimización...")
-elif estado == "Infeasible":
-    st.sidebar.error("🔴 Modelo infeasible")
-else:
-    st.sidebar.warning("⚪ En espera de ejecución")
+# ==============================
+# MAPA FOLIUM
+# ==============================
+m = folium.Map(location=[6.2406, -75.5896], zoom_start=16)
 
-# ============================================================
-# MAPA INTERACTIVO
-# ============================================================
-m = folium.Map(location=[6.243, -75.588], zoom_start=15, tiles="cartodbpositron")
-
-# Base
-lat_b, lon_b = G.nodes[st.session_state.base]["y"], G.nodes[st.session_state.base]["x"]
+# Marcador base
 folium.Marker(
-    [lat_b, lon_b],
+    location=(G.nodes[st.session_state.base]['y'], G.nodes[st.session_state.base]['x']),
     popup="🚑 Base de ambulancias",
-    tooltip="Base",
     icon=folium.Icon(color="blue", icon="home"),
 ).add_to(m)
 
-# Colores
-colores = {"leve": "green", "media": "orange", "critica": "red"}
+# Marcadores de emergencias
+for i, e in enumerate(st.session_state.emergencias):
+    folium.Marker(
+        location=(G.nodes[e]['y'], G.nodes[e]['x']),
+        popup=f"Emergencia #{i+1}",
+        icon=folium.Icon(color="red", icon="medkit"),
+    ).add_to(m)
 
-if "rutas" in st.session_state:
-    for e in st.session_state.rutas:
-        tipo = e["tipo"]
-        coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in e["ruta"]]
-        folium.PolyLine(
-            coords,
-            color=colores[tipo],
-            weight=6,
-            opacity=0.8,
-            tooltip=f"{e['emergencia']} ({tipo})\nVel. Req: {round(e['vel_requerida'], 1)} km/h\nCosto: {e['costo']}",
-        ).add_to(m)
-
-        lat_e, lon_e = G.nodes[e["ruta"][-1]]["y"], G.nodes[e["ruta"][-1]]["x"]
-        folium.Marker(
-            [lat_e, lon_e],
-            popup=f"{e['emergencia']} - {tipo}",
-            tooltip=f"Emergencia {e['emergencia']}",
-            icon=folium.Icon(color=colores[tipo], icon="info-sign"),
-        ).add_to(m)
-
-st_folium(m, width=1300, height=600)
-
-# ============================================================
-# TABLA DE RESULTADOS
-# ============================================================
-st.subheader("📊 Resultados de asignación de ambulancias")
-
-if "rutas" in st.session_state and len(st.session_state.rutas) > 0:
-    st.table(
-        [
-            {
-                "Emergencia": e["emergencia"],
-                "Tipo": e["tipo"],
-                "Vel. requerida (km/h)": round(e["vel_requerida"], 2),
-                "Distancia (m)": round(e["distancia"], 2),
-                "Costo operativo": e["costo"],
-            }
-            for e in st.session_state.rutas
-        ]
-    )
-else:
-    st.info("Ejecuta el modelo para ver los resultados.")
+# Mostrar mapa
+st_data = st_folium(m, width=900, height=600)
