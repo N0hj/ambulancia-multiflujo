@@ -1,136 +1,143 @@
 import streamlit as st
-import networkx as nx
 import osmnx as ox
-import random
+import networkx as nx
+import pulp
 import folium
-from pulp import LpProblem, LpVariable, lpSum, LpMinimize, LpStatus
 from streamlit_folium import st_folium
+import random
 
-# ==============================
-# CONFIGURACIÓN DE LA APP
-# ==============================
-st.set_page_config(page_title="Optimización de Ambulancias", layout="wide")
+st.set_page_config(layout="wide", page_title="Optimización Multiflujo de Ambulancias")
 
-# ==============================
-# FUNCIÓN PARA CARGAR GRAFO
-# ==============================
-@st.cache_data(show_spinner=False)
-def cargar_grafo():
-    G = ox.graph_from_point((6.2406, -75.5896), dist=560, network_type='drive')
-    G = ox.add_edge_speeds(G)
-    G = ox.add_edge_travel_times(G)
-    return G
+# =============================
+# CONFIGURACIÓN LATERAL
+# =============================
+st.sidebar.header("⚙️ Configuración de parámetros")
 
-G = cargar_grafo()
+Rmin = st.sidebar.slider("Velocidad mínima requerida (km/h)", 10, 80, 30)
+Rmax = st.sidebar.slider("Velocidad máxima requerida (km/h)", 20, 120, 60)
+Cmin = st.sidebar.slider("Capacidad mínima de vía (km/h)", 10, 100, 20)
+Cmax = st.sidebar.slider("Capacidad máxima de vía (km/h)", 20, 150, 80)
 
-# ==============================
-# FUNCIONES AUXILIARES
-# ==============================
-def generar_puntos(G, n_emergencias=5):
-    nodos = list(G.nodes)
-    base = random.choice(nodos)
-    emergencias = random.sample(nodos, n_emergencias)
-    return base, emergencias
+st.sidebar.header("💰 Costos operativos de ambulancias")
+costos = {
+    "Leve": st.sidebar.number_input("Transporte simple (Leve)", 50, 1000, 100),
+    "Media": st.sidebar.number_input("Cuidados intermedios (Media)", 50, 1000, 200),
+    "Crítica": st.sidebar.number_input("Cuidados críticos (Crítica)", 50, 1000, 300)
+}
 
-if "base" not in st.session_state:
-    st.session_state.base, st.session_state.emergencias = generar_puntos(G)
-if "estado_modelo" not in st.session_state:
-    st.session_state.estado_modelo = "No resuelto"
+if "capacidades" not in st.session_state:
+    st.session_state.capacidades = {}
+if "resultados" not in st.session_state:
+    st.session_state.resultados = {}
 
-# ==============================
-# SIDEBAR
-# ==============================
-with st.sidebar:
-    st.markdown("### ⚙️ Configuración de parámetros")
+# =============================
+# MAPA BASE
+# =============================
+st.title("🚑 Optimización de rutas de ambulancias (Modelo Multiflujo con PuLP)")
 
-    vel_min = st.slider("Velocidad mínima requerida (km/h)", 10, 50, 30)
-    vel_max = st.slider("Velocidad máxima requerida (km/h)", 40, 100, 60)
-    cap_min = st.slider("Capacidad mínima de vía (km/h)", 10, 50, 20)
-    cap_max = st.slider("Capacidad máxima de vía (km/h)", 60, 120, 80)
+# Cargar red vial real
+lat, lon = 6.2442, -75.5812  # Medellín, ejemplo
+G = ox.graph_from_point((lat, lon), dist=500, network_type='drive')
 
-    st.markdown("### 💰 Costos operativos de ambulancias")
-    costo_leve = st.number_input("Transporte simple (Leve)", 50, 300, 100)
-    costo_media = st.number_input("Cuidados intermedios (Media)", 100, 400, 200)
-    costo_critica = st.number_input("Cuidados críticos (Crítica)", 200, 600, 300)
+# Asignar velocidades aleatorias dentro del rango
+for u, v, k, data in G.edges(keys=True, data=True):
+    data["velocidad"] = random.uniform(Cmin, Cmax)
+    data["tiempo"] = data["length"] / (data["velocidad"] * 1000 / 3600)  # segundos aprox
 
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("🔄 Recalcular capacidades"):
-            G = cargar_grafo()
-    with col2:
-        if st.button("🎲 Recalcular ubicaciones"):
-            st.session_state.base, st.session_state.emergencias = generar_puntos(G)
-            st.session_state.estado_modelo = "Ubicaciones actualizadas"
-    with col3:
-        calcular = st.button("🚑 Calcular rutas óptimas")
+# =============================
+# NODOS BASE Y DESTINOS
+# =============================
+nodos = list(G.nodes())
+origen = random.choice(nodos)
+destinos = random.sample(nodos, 3)
 
-    st.markdown("---")
-    st.markdown("### 📊 Estado del modelo:")
-
-    # Bloque persistente para estado
-    estado_placeholder = st.empty()
-    estado = st.session_state.estado_modelo
-    if "óptimo" in estado.lower():
-        color = "green"
-    elif "inf" in estado.lower():
-        color = "red"
-    else:
-        color = "orange"
-    estado_placeholder.markdown(f"<span style='color:{color}; font-size:18px; font-weight:bold;'>{estado}</span>", unsafe_allow_html=True)
-
-# ==============================
-# OPTIMIZACIÓN CON PULP
-# ==============================
-def optimizar_rutas(G, base, emergencias, costo_leve, costo_media, costo_critica):
-    model = LpProblem("Rutas_Ambulancias", LpMinimize)
+# =============================
+# MODELO PULP
+# =============================
+def optimizar_rutas(G, origen, destinos, costos):
+    prob = pulp.LpProblem("RuteoAmbulancias", pulp.LpMinimize)
+    x = {}
 
     tipos = ["Leve", "Media", "Crítica"]
-    costos = {"Leve": costo_leve, "Media": costo_media, "Crítica": costo_critica}
-    arcos = list(G.edges)
+    velocidades_requeridas = {
+        "Leve": random.uniform(Rmin, Rmax),
+        "Media": random.uniform(Rmin, Rmax),
+        "Crítica": random.uniform(Rmin, Rmax)
+    }
 
-    x = LpVariable.dicts("x", (tipos, arcos), lowBound=0, cat="Continuous")
+    # Variables binarias por arista y flujo
+    for u, v, k, data in G.edges(keys=True, data=True):
+        for e in tipos:
+            x[(u, v, k, e)] = pulp.LpVariable(f"x_{u}_{v}_{k}_{e}", cat="Binary")
 
-    model += lpSum(G[u][v][0]['length'] * costos[t] * x[t][(u, v)] for t in tipos for (u, v) in arcos)
+    # Función objetivo
+    prob += pulp.lpSum(
+        x[(u, v, k, e)] * data["tiempo"] * costos[e]
+        for u, v, k, data in G.edges(keys=True, data=True)
+        for e in tipos
+    )
 
-    # Cada emergencia debe ser atendida
-    for e in emergencias:
-        model += lpSum(x[t][(u, v)] for t in tipos for (u, v) in arcos if v == e) >= 1, f"Atencion_{e}"
+    # Restricciones de capacidad y flujo
+    for u, v, k, data in G.edges(keys=True, data=True):
+        for e in tipos:
+            prob += data["velocidad"] >= velocidades_requeridas[e] * x[(u, v, k, e)]
 
-    # Restricciones de capacidad
-    for (u, v) in arcos:
-        capacidad = random.uniform(cap_min, cap_max)
-        model += lpSum(x[t][(u, v)] for t in tipos) <= capacidad, f"Cap_{u}_{v}"
+    for e, dest in zip(tipos, destinos):
+        for n in G.nodes():
+            in_edges = [(u, v, k) for u, v, k in G.in_edges(n, keys=True)]
+            out_edges = [(u, v, k) for u, v, k in G.out_edges(n, keys=True)]
+            prob += (
+                pulp.lpSum(x[(u, v, k, e)] for u, v, k in out_edges) -
+                pulp.lpSum(x[(u, v, k, e)] for u, v, k in in_edges)
+                == (1 if n == origen else -1 if n == dest else 0)
+            )
 
-    model.solve()
-    return model, LpStatus[model.status]
+    solver = pulp.PULP_CBC_CMD(msg=False)
+    status = prob.solve(solver)
+    return x, pulp.LpStatus[prob.status], velocidades_requeridas
 
-# ==============================
-# EJECUCIÓN DEL MODELO
-# ==============================
-if calcular:
-    model, estado = optimizar_rutas(G, st.session_state.base, st.session_state.emergencias, costo_leve, costo_media, costo_critica)
-    st.session_state.estado_modelo = estado
+# =============================
+# BOTONES DE ACCIÓN
+# =============================
+col1, col2, col3 = st.columns(3)
+with col1:
+    if st.button("♻️ Recalcular capacidades"):
+        for u, v, k, data in G.edges(keys=True, data=True):
+            data["velocidad"] = random.uniform(Cmin, Cmax)
+        st.session_state.capacidades = { (u,v,k): data["velocidad"] for u,v,k,data in G.edges(keys=True, data=True) }
+        st.success("Capacidades recalculadas")
 
-# ==============================
-# MAPA
-# ==============================
-m = folium.Map(location=[6.2406, -75.5896], zoom_start=16)
+with col3:
+    if st.button("🧮 Calcular rutas óptimas"):
+        with st.spinner("Ejecutando optimización..."):
+            x, estado, velocidades_req = optimizar_rutas(G, origen, destinos, costos)
+            st.session_state.resultados = {"x": x, "estado": estado, "vel": velocidades_req}
 
-# Base
-folium.Marker(
-    location=(G.nodes[st.session_state.base]['y'], G.nodes[st.session_state.base]['x']),
-    popup="🚑 Base de ambulancias",
-    icon=folium.Icon(color="blue", icon="home"),
-).add_to(m)
+# =============================
+# MOSTRAR RESULTADOS
+# =============================
+if st.session_state.resultados:
+    estado = st.session_state.resultados["estado"]
+    st.markdown(f"### Estado de la optimización: **{estado}**")
 
-# Emergencias
-for i, e in enumerate(st.session_state.emergencias):
-    folium.Marker(
-        location=(G.nodes[e]['y'], G.nodes[e]['x']),
-        popup=f"Emergencia #{i+1}",
-        icon=folium.Icon(color="red", icon="medkit"),
-    ).add_to(m)
+    # Crear mapa folium
+    m = folium.Map(location=[lat, lon], zoom_start=15, tiles="cartodb positron")
+    folium.Marker(location=ox.graph_to_gdfs(G, nodes=True).loc[origen][['y', 'x']], 
+                  tooltip="Base de ambulancias", icon=folium.Icon(color="blue", icon="hospital")).add_to(m)
 
-# Mostrar mapa
-st_folium(m, width=900, height=600)
+    colores = {"Leve": "green", "Media": "orange", "Crítica": "red"}
+    x = st.session_state.resultados["x"]
+
+    for (u, v, k, e), var in x.items():
+        if pulp.value(var) == 1:
+            u_xy = (G.nodes[u]['y'], G.nodes[u]['x'])
+            v_xy = (G.nodes[v]['y'], G.nodes[v]['x'])
+            folium.PolyLine(
+                [u_xy, v_xy], color=colores[e], weight=5, tooltip=f"{e} ({round(G[u][v][k]['velocidad'],1)} km/h)"
+            ).add_to(m)
+
+    for e, d in zip(["Leve", "Media", "Crítica"], destinos):
+        folium.Marker(location=ox.graph_to_gdfs(G, nodes=True).loc[d][['y', 'x']],
+                      tooltip=f"Emergencia {e}", icon=folium.Icon(color=colores[e])).add_to(m)
+
+    st_folium(m, width=900, height=600)
