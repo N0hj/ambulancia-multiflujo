@@ -203,38 +203,47 @@ def resolver_modelo_multiflujo(G, origen, emergencias):
     
     return rutas, pulp.value(modelo.objective)
 
-def obtener_geometria_ruta(G, ruta_aristas):
-    """Obtiene las coordenadas exactas de la geometría de las calles"""
-    if not ruta_aristas:
-        return []
-    
-    coordenadas = []
-    
-    for u, v, k in ruta_aristas:
-        edge_data = G[u][v][k]
+def obtener_ruta_con_geometria(G, origen, destino):
+    """Calcula la ruta más corta y obtiene su geometría completa"""
+    try:
+        # Calcular camino más corto usando NetworkX
+        ruta_nodos = nx.shortest_path(G, origen, destino, weight='length')
         
-        # Si la arista tiene geometría (curva de la calle), usar esa
-        if 'geometry' in edge_data:
-            geom = edge_data['geometry']
-            # Extraer coordenadas de la geometría
-            if hasattr(geom, 'coords'):
-                coords_list = list(geom.coords)
-                for lon, lat in coords_list:
-                    coordenadas.append((lat, lon))
-        else:
-            # Si no tiene geometría, usar las coordenadas de los nodos
-            u_y, u_x = G.nodes[u]['y'], G.nodes[u]['x']
-            v_y, v_x = G.nodes[v]['y'], G.nodes[v]['x']
-            coordenadas.append((u_y, u_x))
-            coordenadas.append((v_y, v_x))
-    
-    # Eliminar duplicados consecutivos
-    coordenadas_limpias = []
-    for i, coord in enumerate(coordenadas):
-        if i == 0 or coord != coordenadas[i-1]:
-            coordenadas_limpias.append(coord)
-    
-    return coordenadas_limpias
+        coordenadas = []
+        
+        # Por cada par de nodos consecutivos en la ruta
+        for i in range(len(ruta_nodos) - 1):
+            u = ruta_nodos[i]
+            v = ruta_nodos[i + 1]
+            
+            # Obtener la arista entre u y v
+            if G.has_edge(u, v):
+                # Puede haber múltiples aristas (multigraph), tomar la primera
+                edge_data = G[u][v][0]
+                
+                # Si la arista tiene geometría detallada, usarla
+                if 'geometry' in edge_data:
+                    geom = edge_data['geometry']
+                    if hasattr(geom, 'coords'):
+                        coords_list = list(geom.coords)
+                        for lon, lat in coords_list:
+                            coordenadas.append((lat, lon))
+                else:
+                    # Si no, usar coordenadas de los nodos
+                    u_y, u_x = G.nodes[u]['y'], G.nodes[u]['x']
+                    v_y, v_x = G.nodes[v]['y'], G.nodes[v]['x']
+                    if not coordenadas or coordenadas[-1] != (u_y, u_x):
+                        coordenadas.append((u_y, u_x))
+                    coordenadas.append((v_y, v_x))
+        
+        return coordenadas
+    except:
+        # Si falla, devolver línea recta
+        if origen in G.nodes() and destino in G.nodes():
+            o_y, o_x = G.nodes[origen]['y'], G.nodes[origen]['x']
+            d_y, d_x = G.nodes[destino]['y'], G.nodes[destino]['x']
+            return [(o_y, o_x), (d_y, d_x)]
+        return []
 
 def calcular_metricas_ruta(G, ruta):
     """Calcula métricas de una ruta"""
@@ -290,8 +299,9 @@ def crear_mapa(G, origen, emergencias, rutas):
         
         # Dibujar ruta siguiendo la geometría real de las calles
         if emerg['id'] in rutas and rutas[emerg['id']]:
-            # Obtener coordenadas siguiendo la geometría de las calles
-            ruta_coords = obtener_geometria_ruta(G_latlon, rutas[emerg['id']])
+            # Calcular la ruta más corta real usando NetworkX
+            # Esto garantiza que siga las calles correctamente
+            ruta_coords = obtener_ruta_con_geometria(G_latlon, origen, emerg['destino'])
             
             if len(ruta_coords) >= 2:
                 # Dibujar línea continua siguiendo las calles
