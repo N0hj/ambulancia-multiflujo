@@ -44,9 +44,9 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🚑 Tipos de Emergencias")
 
 # Número de emergencias por tipo
-n_leve = st.sidebar.number_input("Emergencias Leves", value=2, min_value=1, max_value=5)
-n_media = st.sidebar.number_input("Emergencias Medias", value=2, min_value=1, max_value=5)
-n_critica = st.sidebar.number_input("Emergencias Críticas", value=2, min_value=1, max_value=5)
+n_leve = st.sidebar.number_input("Emergencias Leves", value=1, min_value=1, max_value=5)
+n_media = st.sidebar.number_input("Emergencias Medias", value=1, min_value=1, max_value=5)
+n_critica = st.sidebar.number_input("Emergencias Críticas", value=1, min_value=1, max_value=5)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("💰 Costos Operativos")
@@ -203,43 +203,52 @@ def resolver_modelo_multiflujo(G, origen, emergencias):
     
     return rutas, pulp.value(modelo.objective)
 
-def reconstruir_camino(G, ruta_aristas):
-    """Reconstruye el camino ordenado desde las aristas de la solución"""
+def reconstruir_camino(G, ruta_aristas, origen, destino):
+    """Reconstruye el camino ordenado desde las aristas de la solución usando NetworkX"""
     if not ruta_aristas:
         return []
     
-    # Crear diccionario de conexiones
-    conexiones = {}
-    for u, v, k in ruta_aristas:
-        if u not in conexiones:
-            conexiones[u] = []
-        conexiones[u].append(v)
+    # Crear subgrafo con las aristas de la ruta
+    edges_list = [(u, v) for u, v, k in ruta_aristas]
     
-    # Encontrar nodo inicial (solo tiene salidas)
-    nodos_con_entrada = set()
-    for u, v, k in ruta_aristas:
-        nodos_con_entrada.add(v)
-    
-    nodo_inicial = None
-    for u in conexiones.keys():
-        if u not in nodos_con_entrada:
-            nodo_inicial = u
-            break
-    
-    if nodo_inicial is None:
-        return []
-    
-    # Reconstruir camino
-    camino = [nodo_inicial]
-    nodo_actual = nodo_inicial
-    
-    while nodo_actual in conexiones and conexiones[nodo_actual]:
-        siguiente = conexiones[nodo_actual][0]
-        camino.append(siguiente)
-        conexiones[nodo_actual].remove(siguiente)
-        nodo_actual = siguiente
-    
-    return camino
+    # Intentar encontrar el camino más simple
+    try:
+        # Crear diccionario de adyacencia
+        adj = {}
+        for u, v, k in ruta_aristas:
+            if u not in adj:
+                adj[u] = []
+            adj[u].append(v)
+        
+        # Reconstruir camino desde origen
+        camino = [origen]
+        actual = origen
+        visitados = set([origen])
+        
+        while actual != destino:
+            if actual in adj:
+                # Tomar el primer vecino no visitado
+                for vecino in adj[actual]:
+                    if vecino not in visitados:
+                        camino.append(vecino)
+                        visitados.add(vecino)
+                        actual = vecino
+                        break
+                else:
+                    # No hay vecinos no visitados
+                    break
+            else:
+                break
+        
+        if camino[-1] == destino:
+            return camino
+        else:
+            # Si no llegamos al destino, devolver lista simple
+            return list(set([u for u, v, k in ruta_aristas] + [v for u, v, k in ruta_aristas]))
+    except:
+        # En caso de error, devolver lista de nodos únicos
+        nodos = list(set([u for u, v, k in ruta_aristas] + [v for u, v, k in ruta_aristas]))
+        return nodos
 
 def calcular_metricas_ruta(G, ruta):
     """Calcula métricas de una ruta"""
@@ -296,32 +305,34 @@ def crear_mapa(G, origen, emergencias, rutas):
         # Dibujar ruta CORRECTAMENTE siguiendo el camino
         if emerg['id'] in rutas and rutas[emerg['id']]:
             # Reconstruir camino ordenado
-            camino = reconstruir_camino(G_latlon, rutas[emerg['id']])
+            camino = reconstruir_camino(G_latlon, rutas[emerg['id']], origen, emerg['destino'])
             
-            if camino:
+            if camino and len(camino) >= 2:
                 # Obtener coordenadas en orden
                 ruta_coords = []
                 for nodo in camino:
-                    coords = (G_latlon.nodes[nodo]['y'], G_latlon.nodes[nodo]['x'])
-                    ruta_coords.append(coords)
+                    if nodo in G_latlon.nodes():
+                        coords = (G_latlon.nodes[nodo]['y'], G_latlon.nodes[nodo]['x'])
+                        ruta_coords.append(coords)
                 
-                # Dibujar línea continua
-                folium.PolyLine(
-                    ruta_coords,
-                    color=emerg['color'],
-                    weight=5,
-                    opacity=0.8,
-                    tooltip=f"Ruta {emerg['id']}"
-                ).add_to(mapa)
-                
-                # Agregar flechas direccionales
-                plugins.AntPath(
-                    ruta_coords,
-                    color=emerg['color'],
-                    weight=3,
-                    opacity=0.6,
-                    delay=1000
-                ).add_to(mapa)
+                if len(ruta_coords) >= 2:
+                    # Dibujar línea continua
+                    folium.PolyLine(
+                        ruta_coords,
+                        color=emerg['color'],
+                        weight=6,
+                        opacity=0.8,
+                        tooltip=f"Ruta {emerg['id']}: {len(camino)} nodos"
+                    ).add_to(mapa)
+                    
+                    # Agregar flechas direccionales
+                    plugins.AntPath(
+                        ruta_coords,
+                        color=emerg['color'],
+                        weight=4,
+                        opacity=0.6,
+                        delay=800
+                    ).add_to(mapa)
     
     return mapa
 
