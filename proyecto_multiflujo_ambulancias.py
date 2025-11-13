@@ -23,9 +23,9 @@ st.markdown("### Modelo de Flujo Multiflujo para Emergencias Médicas Urbanas")
 # Sidebar para configuración
 st.sidebar.header("⚙️ Configuración del Sistema")
 
-# Zona de estudio - Laureles, Medellín (zona urbana densa)
-center_lat = st.sidebar.number_input("Latitud del centro", value=6.2442, format="%.4f")
-center_lon = st.sidebar.number_input("Longitud del centro", value=-75.5890, format="%.4f")
+# Zona de estudio - Chelsea, Manhattan, NYC (zona urbana muy densa)
+center_lat = st.sidebar.number_input("Latitud del centro", value=40.7484, format="%.4f")
+center_lon = st.sidebar.number_input("Longitud del centro", value=-73.9967, format="%.4f")
 radius = st.sidebar.slider("Radio de estudio (metros)", 400, 800, 560)
 
 st.sidebar.markdown("---")
@@ -203,6 +203,44 @@ def resolver_modelo_multiflujo(G, origen, emergencias):
     
     return rutas, pulp.value(modelo.objective)
 
+def reconstruir_camino(G, ruta_aristas):
+    """Reconstruye el camino ordenado desde las aristas de la solución"""
+    if not ruta_aristas:
+        return []
+    
+    # Crear diccionario de conexiones
+    conexiones = {}
+    for u, v, k in ruta_aristas:
+        if u not in conexiones:
+            conexiones[u] = []
+        conexiones[u].append(v)
+    
+    # Encontrar nodo inicial (solo tiene salidas)
+    nodos_con_entrada = set()
+    for u, v, k in ruta_aristas:
+        nodos_con_entrada.add(v)
+    
+    nodo_inicial = None
+    for u in conexiones.keys():
+        if u not in nodos_con_entrada:
+            nodo_inicial = u
+            break
+    
+    if nodo_inicial is None:
+        return []
+    
+    # Reconstruir camino
+    camino = [nodo_inicial]
+    nodo_actual = nodo_inicial
+    
+    while nodo_actual in conexiones and conexiones[nodo_actual]:
+        siguiente = conexiones[nodo_actual][0]
+        camino.append(siguiente)
+        conexiones[nodo_actual].remove(siguiente)
+        nodo_actual = siguiente
+    
+    return camino
+
 def calcular_metricas_ruta(G, ruta):
     """Calcula métricas de una ruta"""
     distancia_total = 0
@@ -219,7 +257,7 @@ def calcular_metricas_ruta(G, ruta):
     return distancia_total / 1000, tiempo_total  # km, minutos
 
 def crear_mapa(G, origen, emergencias, rutas):
-    """Crea mapa con Folium"""
+    """Crea mapa con Folium - Versión simplificada"""
     
     # Reproyectar a lat/lon
     G_latlon = ox.project_graph(G, to_crs='EPSG:4326')
@@ -227,18 +265,22 @@ def crear_mapa(G, origen, emergencias, rutas):
     # Obtener coordenadas del origen
     origen_coords = (G_latlon.nodes[origen]['y'], G_latlon.nodes[origen]['x'])
     
-    # Crear mapa base
-    mapa = folium.Map(location=origen_coords, zoom_start=15, tiles='OpenStreetMap')
+    # Crear mapa base SIMPLE - CartoDB Positron (limpio y minimalista)
+    mapa = folium.Map(
+        location=origen_coords, 
+        zoom_start=15, 
+        tiles='CartoDB positron'
+    )
     
     # Agregar base de ambulancias
     folium.Marker(
         origen_coords,
-        popup="🏥 Base de Ambulancias",
+        popup="<b>🏥 Base de Ambulancias</b>",
         tooltip="Base de Ambulancias",
         icon=folium.Icon(color='blue', icon='plus', prefix='fa')
     ).add_to(mapa)
     
-    # Agregar emergencias y rutas
+    # Agregar emergencias y rutas CORREGIDAS
     for emerg in emergencias:
         destino_coords = (G_latlon.nodes[emerg['destino']]['y'], 
                          G_latlon.nodes[emerg['destino']]['x'])
@@ -246,26 +288,40 @@ def crear_mapa(G, origen, emergencias, rutas):
         # Marcador de emergencia
         folium.Marker(
             destino_coords,
-            popup=f"{emerg['tipo']}: {emerg['id']}<br>Vel. req: {emerg['velocidad_req']:.1f} km/h",
+            popup=f"<b>{emerg['tipo']}: {emerg['id']}</b><br>Vel. req: {emerg['velocidad_req']:.1f} km/h",
             tooltip=f"{emerg['tipo']}",
             icon=folium.Icon(color=emerg['color'], icon='ambulance', prefix='fa')
         ).add_to(mapa)
         
-        # Dibujar ruta
+        # Dibujar ruta CORRECTAMENTE siguiendo el camino
         if emerg['id'] in rutas and rutas[emerg['id']]:
-            ruta_coords = []
-            for u, v, k in rutas[emerg['id']]:
-                u_coords = (G_latlon.nodes[u]['y'], G_latlon.nodes[u]['x'])
-                v_coords = (G_latlon.nodes[v]['y'], G_latlon.nodes[v]['x'])
-                ruta_coords.extend([u_coords, v_coords])
+            # Reconstruir camino ordenado
+            camino = reconstruir_camino(G_latlon, rutas[emerg['id']])
             
-            folium.PolyLine(
-                ruta_coords,
-                color=emerg['color'],
-                weight=4,
-                opacity=0.7,
-                tooltip=f"Ruta {emerg['id']}"
-            ).add_to(mapa)
+            if camino:
+                # Obtener coordenadas en orden
+                ruta_coords = []
+                for nodo in camino:
+                    coords = (G_latlon.nodes[nodo]['y'], G_latlon.nodes[nodo]['x'])
+                    ruta_coords.append(coords)
+                
+                # Dibujar línea continua
+                folium.PolyLine(
+                    ruta_coords,
+                    color=emerg['color'],
+                    weight=5,
+                    opacity=0.8,
+                    tooltip=f"Ruta {emerg['id']}"
+                ).add_to(mapa)
+                
+                # Agregar flechas direccionales
+                plugins.AntPath(
+                    ruta_coords,
+                    color=emerg['color'],
+                    weight=3,
+                    opacity=0.6,
+                    delay=1000
+                ).add_to(mapa)
     
     return mapa
 
@@ -286,13 +342,13 @@ with col_btn1:
     if st.button("🔄 Recalcular Capacidades", use_container_width=True):
         if st.session_state.G is not None:
             st.session_state.G = asignar_capacidades(st.session_state.G, C_min, C_max)
-            st.success("Capacidades recalculadas")
+            st.success("✅ Capacidades recalculadas")
         else:
-            st.warning("Primero debe cargar la red vial")
+            st.warning("⚠️ Primero debe cargar la red vial")
 
 with col_btn2:
     if st.button("🚀 Recalcular Flujos", use_container_width=True):
-        with st.spinner("Calculando rutas óptimas..."):
+        with st.spinner("⏳ Calculando rutas óptimas..."):
             # Cargar/actualizar red
             if st.session_state.G is None:
                 st.session_state.G = obtener_red_vial(center_lat, center_lon, radius)
@@ -364,6 +420,7 @@ if st.session_state.rutas is not None:
     
     with tab3:
         st.subheader("📍 Información de la Zona")
+        st.write(f"**Ubicación:** Chelsea, Manhattan, Nueva York")
         st.write(f"**Centro:** ({center_lat}, {center_lon})")
         st.write(f"**Radio:** {radius} metros")
         st.write(f"**Nodos en la red:** {st.session_state.G.number_of_nodes()}")
@@ -379,4 +436,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("**Modelo de Optimización Multiflujo para Rutas de Ambulancias** | Desarrollado con OSMnx + PuLP + Streamlit")
+st.markdown("**Modelo de Optimización Multiflujo para Rutas de Ambulancias** | Chelsea, Manhattan, NYC | OSMnx + PuLP + Streamlit")
