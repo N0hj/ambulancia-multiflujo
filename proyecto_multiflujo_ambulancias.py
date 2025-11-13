@@ -203,52 +203,38 @@ def resolver_modelo_multiflujo(G, origen, emergencias):
     
     return rutas, pulp.value(modelo.objective)
 
-def reconstruir_camino(G, ruta_aristas, origen, destino):
-    """Reconstruye el camino ordenado desde las aristas de la solución usando NetworkX"""
+def obtener_geometria_ruta(G, ruta_aristas):
+    """Obtiene las coordenadas exactas de la geometría de las calles"""
     if not ruta_aristas:
         return []
     
-    # Crear subgrafo con las aristas de la ruta
-    edges_list = [(u, v) for u, v, k in ruta_aristas]
+    coordenadas = []
     
-    # Intentar encontrar el camino más simple
-    try:
-        # Crear diccionario de adyacencia
-        adj = {}
-        for u, v, k in ruta_aristas:
-            if u not in adj:
-                adj[u] = []
-            adj[u].append(v)
+    for u, v, k in ruta_aristas:
+        edge_data = G[u][v][k]
         
-        # Reconstruir camino desde origen
-        camino = [origen]
-        actual = origen
-        visitados = set([origen])
-        
-        while actual != destino:
-            if actual in adj:
-                # Tomar el primer vecino no visitado
-                for vecino in adj[actual]:
-                    if vecino not in visitados:
-                        camino.append(vecino)
-                        visitados.add(vecino)
-                        actual = vecino
-                        break
-                else:
-                    # No hay vecinos no visitados
-                    break
-            else:
-                break
-        
-        if camino[-1] == destino:
-            return camino
+        # Si la arista tiene geometría (curva de la calle), usar esa
+        if 'geometry' in edge_data:
+            geom = edge_data['geometry']
+            # Extraer coordenadas de la geometría
+            if hasattr(geom, 'coords'):
+                coords_list = list(geom.coords)
+                for lon, lat in coords_list:
+                    coordenadas.append((lat, lon))
         else:
-            # Si no llegamos al destino, devolver lista simple
-            return list(set([u for u, v, k in ruta_aristas] + [v for u, v, k in ruta_aristas]))
-    except:
-        # En caso de error, devolver lista de nodos únicos
-        nodos = list(set([u for u, v, k in ruta_aristas] + [v for u, v, k in ruta_aristas]))
-        return nodos
+            # Si no tiene geometría, usar las coordenadas de los nodos
+            u_y, u_x = G.nodes[u]['y'], G.nodes[u]['x']
+            v_y, v_x = G.nodes[v]['y'], G.nodes[v]['x']
+            coordenadas.append((u_y, u_x))
+            coordenadas.append((v_y, v_x))
+    
+    # Eliminar duplicados consecutivos
+    coordenadas_limpias = []
+    for i, coord in enumerate(coordenadas):
+        if i == 0 or coord != coordenadas[i-1]:
+            coordenadas_limpias.append(coord)
+    
+    return coordenadas_limpias
 
 def calcular_metricas_ruta(G, ruta):
     """Calcula métricas de una ruta"""
@@ -302,37 +288,29 @@ def crear_mapa(G, origen, emergencias, rutas):
             icon=folium.Icon(color=emerg['color'], icon='ambulance', prefix='fa')
         ).add_to(mapa)
         
-        # Dibujar ruta CORRECTAMENTE siguiendo el camino
+        # Dibujar ruta siguiendo la geometría real de las calles
         if emerg['id'] in rutas and rutas[emerg['id']]:
-            # Reconstruir camino ordenado
-            camino = reconstruir_camino(G_latlon, rutas[emerg['id']], origen, emerg['destino'])
+            # Obtener coordenadas siguiendo la geometría de las calles
+            ruta_coords = obtener_geometria_ruta(G_latlon, rutas[emerg['id']])
             
-            if camino and len(camino) >= 2:
-                # Obtener coordenadas en orden
-                ruta_coords = []
-                for nodo in camino:
-                    if nodo in G_latlon.nodes():
-                        coords = (G_latlon.nodes[nodo]['y'], G_latlon.nodes[nodo]['x'])
-                        ruta_coords.append(coords)
+            if len(ruta_coords) >= 2:
+                # Dibujar línea continua siguiendo las calles
+                folium.PolyLine(
+                    ruta_coords,
+                    color=emerg['color'],
+                    weight=6,
+                    opacity=0.8,
+                    tooltip=f"Ruta {emerg['id']}: {emerg['tipo']}"
+                ).add_to(mapa)
                 
-                if len(ruta_coords) >= 2:
-                    # Dibujar línea continua
-                    folium.PolyLine(
-                        ruta_coords,
-                        color=emerg['color'],
-                        weight=6,
-                        opacity=0.8,
-                        tooltip=f"Ruta {emerg['id']}: {len(camino)} nodos"
-                    ).add_to(mapa)
-                    
-                    # Agregar flechas direccionales
-                    plugins.AntPath(
-                        ruta_coords,
-                        color=emerg['color'],
-                        weight=4,
-                        opacity=0.6,
-                        delay=800
-                    ).add_to(mapa)
+                # Agregar flechas direccionales
+                plugins.AntPath(
+                    ruta_coords,
+                    color=emerg['color'],
+                    weight=4,
+                    opacity=0.6,
+                    delay=800
+                ).add_to(mapa)
     
     return mapa
 
