@@ -203,13 +203,14 @@ def resolver_modelo_multiflujo(G, origen, emergencias):
     
     return rutas, pulp.value(modelo.objective)
 
-def reconstruir_camino_ordenado(ruta_aristas, origen):
+def reconstruir_camino_ordenado(ruta_aristas, origen, destino):
     """
     ✅ NUEVA FUNCIÓN: Reordena las aristas de PuLP para formar un camino válido
     
     Args:
         ruta_aristas: Lista de tuplas (u, v, k) que PuLP eligió (desordenadas)
         origen: Nodo de inicio
+        destino: Nodo final
         
     Returns:
         Lista de tuplas (u, v, k) en orden correcto desde origen hasta destino
@@ -217,22 +218,47 @@ def reconstruir_camino_ordenado(ruta_aristas, origen):
     if not ruta_aristas:
         return []
     
-    # Crear diccionario de adyacencia: nodo -> (siguiente_nodo, key)
+    # Si solo hay una arista, devolverla directamente
+    if len(ruta_aristas) == 1:
+        return ruta_aristas
+    
+    # Crear diccionario de adyacencia: nodo -> lista de (siguiente_nodo, key)
     grafo = {}
     for u, v, k in ruta_aristas:
-        grafo[u] = (v, k)
+        if u not in grafo:
+            grafo[u] = []
+        grafo[u].append((v, k))
     
-    # Reconstruir camino desde el origen
+    # Reconstruir camino usando DFS o seguimiento simple
     camino_ordenado = []
-    nodo_actual = origen
+    visitados = set()
     
-    # Seguir el camino hasta que no haya más conexiones
-    while nodo_actual in grafo:
-        siguiente_nodo, key = grafo[nodo_actual]
-        camino_ordenado.append((nodo_actual, siguiente_nodo, key))
-        nodo_actual = siguiente_nodo
+    def construir_camino(nodo_actual):
+        if nodo_actual == destino:
+            return True
+        
+        if nodo_actual not in grafo:
+            return False
+        
+        for siguiente, key in grafo[nodo_actual]:
+            arista = (nodo_actual, siguiente, key)
+            if arista not in visitados:
+                visitados.add(arista)
+                camino_ordenado.append(arista)
+                if construir_camino(siguiente):
+                    return True
+                # Backtrack si no lleva al destino
+                camino_ordenado.pop()
+                visitados.remove(arista)
+        
+        return False
     
-    return camino_ordenado
+    # Intentar construir el camino
+    if construir_camino(origen):
+        return camino_ordenado
+    
+    # Si falla, devolver las aristas sin ordenar (fallback)
+    return ruta_aristas
 
 def obtener_geometria_desde_aristas_pulp(G, ruta_aristas_ordenadas):
     """
@@ -338,29 +364,34 @@ def crear_mapa(G, origen, emergencias, rutas):
         if emerg['id'] in rutas and rutas[emerg['id']]:
             
             # Paso 1: Ordenar las aristas de PuLP
-            ruta_ordenada = reconstruir_camino_ordenado(rutas[emerg['id']], origen)
+            ruta_ordenada = reconstruir_camino_ordenado(
+                rutas[emerg['id']], 
+                origen, 
+                emerg['destino']
+            )
             
             # Paso 2: Obtener geometría de esas aristas específicas
-            ruta_coords = obtener_geometria_desde_aristas_pulp(G_latlon, ruta_ordenada)
-            
-            if len(ruta_coords) >= 2:
-                # Dibujar línea siguiendo EXACTAMENTE las aristas de PuLP
-                folium.PolyLine(
-                    ruta_coords,
-                    color=emerg['color'],
-                    weight=6,
-                    opacity=0.8,
-                    tooltip=f"Ruta {emerg['id']}: {emerg['tipo']} (PuLP)"
-                ).add_to(mapa)
+            if ruta_ordenada:
+                ruta_coords = obtener_geometria_desde_aristas_pulp(G_latlon, ruta_ordenada)
                 
-                # Agregar flechas direccionales
-                plugins.AntPath(
-                    ruta_coords,
-                    color=emerg['color'],
-                    weight=4,
-                    opacity=0.6,
-                    delay=800
-                ).add_to(mapa)
+                if len(ruta_coords) >= 2:
+                    # Dibujar línea siguiendo EXACTAMENTE las aristas de PuLP
+                    folium.PolyLine(
+                        ruta_coords,
+                        color=emerg['color'],
+                        weight=6,
+                        opacity=0.8,
+                        tooltip=f"Ruta {emerg['id']}: {emerg['tipo']} (PuLP: {len(ruta_ordenada)} aristas)"
+                    ).add_to(mapa)
+                    
+                    # Agregar flechas direccionales
+                    plugins.AntPath(
+                        ruta_coords,
+                        color=emerg['color'],
+                        weight=4,
+                        opacity=0.6,
+                        delay=800
+                    ).add_to(mapa)
     
     return mapa
 
