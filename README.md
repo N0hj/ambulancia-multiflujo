@@ -1,8 +1,8 @@
-# 🚑 Sistema de Optimización de Rutas de Ambulancias
+#  Sistema de Optimización de Rutas de Ambulancias
 
 Aplicación interactiva que implementa un modelo de optimización multiflujo para determinar las rutas óptimas de ambulancias en escenarios de emergencias simultáneas.
 
-## 📋 Descripción del Proyecto
+##  Descripción del Proyecto
 
 Este proyecto desarrolla un modelo matemático de optimización que permite determinar las rutas óptimas para ambulancias en una red vial real, considerando:
 
@@ -12,17 +12,17 @@ Este proyecto desarrolla un modelo matemático de optimización que permite dete
 - **Velocidades requeridas** para cada flujo
 - **Red vial real** obtenida de OpenStreetMap vía OSMnx
 
-## 🎯 Objetivo
+## Objetivo
 
 Minimizar el costo total de respuesta de ambulancias en emergencias médicas urbanas, considerando el tiempo de viaje y los costos operativos diferenciados por tipo de ambulancia.
 
-## 🏙️ Zona de Estudio
+## Zona de Estudio
 
 - **Ubicación**: Laureles, Medellín, Colombia
 - **Coordenadas centrales**: (6.2442, -75.5890)
 - **Área**: Aproximadamente 1 km² (radio de 560 metros)
 
-## 🔧 Tecnologías Utilizadas
+##  Tecnologías Utilizadas
 
 - **OSMnx**: Obtención de redes viales de OpenStreetMap
 - **PuLP**: Modelado y resolución de problemas de optimización lineal
@@ -30,7 +30,7 @@ Minimizar el costo total de respuesta de ambulancias en emergencias médicas urb
 - **Folium**: Visualización de mapas
 - **NetworkX**: Manipulación de grafos
 
-## 📦 Instalación
+##  Instalación
 
 1. Clonar el repositorio:
 ```bash
@@ -48,7 +48,7 @@ pip install -r requirements.txt
 streamlit run proyecto_multiflujo_ambulancias.py
 ```
 
-## 🚀 Uso de la Aplicación
+##  Uso de la Aplicación
 
 ### Controles Principales
 
@@ -68,13 +68,13 @@ La aplicación muestra:
 - **Mapa interactivo** con las rutas calculadas
 - **Base de ambulancias** (marcador azul)
 - **Emergencias** con código de colores:
-  - 🟢 Verde: Leve
-  - 🟠 Naranja: Media
-  - 🔴 Rojo: Crítica
+  -  Verde: Leve
+  -  Naranja: Media
+  -  Rojo: Crítica
 - **Rutas optimizadas** por emergencia
 - **Tabla de resultados** con distancias, tiempos y costos
 
-## 📐 Formulación Matemática
+##  Formulación Matemática
 
 ### Variables de Decisión
 
@@ -97,7 +97,7 @@ Minimizar:
 2. **Capacidad de vías**:
    - Máximo 1 ambulancia por arista simultáneamente
 
-## 📊 Escenarios de Prueba
+##  Escenarios de Prueba
 
 Se recomienda probar al menos 3 escenarios:
 
@@ -113,7 +113,7 @@ Se recomienda probar al menos 3 escenarios:
    - 3 emergencias leve, 3 medias, 3 críticas
    - Capacidades bajas (15-50 km/h)
 
-## 📝 Estructura del Código
+##  Estructura del Código
 
 ```
 proyecto_multiflujo_ambulancias.py
@@ -131,24 +131,16 @@ proyecto_multiflujo_ambulancias.py
     └── Visualización de resultados
 ```
 
-## 🎓 Entregables del Proyecto
 
-- ✅ Script Python con modelo implementado
-- ✅ Aplicación Streamlit interactiva
-- ✅ Visualización de mapas y resultados
-- ✅ Repositorio GitHub con código documentado
-- ✅ requirements.txt con dependencias
-- 📄 Informe técnico (pendiente)
+##  Autor
 
-## 👨‍💻 Autor
+Jhon Rayo Posada
 
-[Tu nombre]
-
-## 📄 Licencia
+## Licencia
 
 Este proyecto es desarrollado con fines académicos.
 
-## 🙏 Agradecimientos
+##  Agradecimientos
 
 - OpenStreetMap por los datos viales
 - Comunidades de OSMnx, PuLP y Streamlit
